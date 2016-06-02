@@ -1,7 +1,9 @@
 # ethname
 Self-contained FreeBSD rc.d script for re-naming devices based on their MAC address.
 
-## USAGE:
+## Installation:
+Copy ethname into /usr/local/etc/rc.d/
+
 Add the following to rc.conf:
 ```
 ethname_enable="YES"
@@ -16,4 +18,4 @@ Example /usr/local/etc/ifmap contents:
 ```
 That's it. Use `ifconfig_<name>=""` settings in rc.conf with the new names.
 
-Supports device name swapping; uses temporary name as part of the process.
+Supports device name swapping; uses temporary names as part of the process.
