@@ -1,0 +1,118 @@
+#!/bin/sh
+#
+# Self-contained rc.d script for re-naming devices based on their MAC address.
+# USAGE:
+#  1) add the following to rc.conf:
+#       ethname_enable="YES"
+#       ethname_devices="em0 ue0 ue1" # Replace with desired devices to rename
+#  2) Create /usr/local/etc/ifmap in the following format:
+#       <MAC address (in lower case)> <Desired name>
+#     For example:
+#       01:23:45:67:89:ab eth0
+#  3) That's it. Use ifconfig_<name>="" settings with the new names.
+# 
+# Devices in ethname_devices which are unknown to ifconfig or with MAC
+# addresses not found in /usr/local/etc/ifmap are silently ignored.
+#
+# PROVIDE: ethname
+# REQUIRE: FILESYSTEMS
+# BEFORE: netif
+# KEYWORD: nojail
+
+. /etc/rc.subr
+
+name=ethname
+rcvar=ethname_enable
+
+start_cmd="${name}_start"
+stop_cmd=":"
+
+load_rc_config $name
+: ${ethname_enable:=no}
+: ${ethname_devices:=""}
+: ${ethname_ifmap:="/usr/local/etc/ifmap"}
+
+err_str=""
+
+fix_name()
+{
+  # Can be called with or without a second argument (which is used as the new
+  # name if provided.) If only one argument, lookup desired name in ifmap.
+  dev=$1
+  name=${2:-}
+
+  # Make sure the device exists as an ifconfig device
+  
+  if ! ifconfig -l | grep -q $dev; then
+    err_str="could not find device."
+    return 1
+  fi
+
+  # Grab MAC address
+  mac=$(ifconfig $dev | awk '/ether/{print tolower($2)}')
+
+  if [ ${#mac} -eq 0 ]; then
+    err_str="unable to get MAC address"
+    return 1
+  fi
+
+  # Make sure the MAC for this device is in our rename table.
+  if ! grep -q "^$mac" ${ethname_ifmap}; then
+    err_str="no maching MAC in ifmap."
+    return 1
+  fi
+
+  # Find name from MAC -> dev_name table in ifmap
+  dname=$(awk "/^$mac/{print \$2}" ${ethname_ifmap})
+  if [ "$dname" == "$dev" ]; then
+    err_str="already has desired name."
+    return 1
+  fi
+
+  # Use name from MAC -> dev_name table in ifmap if $2 was empty
+  : ${name:=$dname}
+
+  # We have everything we need. Now actual rename of the device.
+  if ! ifconfig $dev name $name; then
+    err_str="return code: $?"
+    return 2
+  fi
+}
+
+ethname_start()
+{
+  # Don't report any other errors if we haven't been asked to do anything.
+  if [ ${#ethname_devices} -eq 0 ]; then
+    warn "No/empty ethname_devices=\"...\" setting in rc.conf. Done."
+    exit 0
+  fi
+
+  # If we have devices to rename, we need an ifmap file
+  if [ ! -e ${ethname_ifmap} ]; then
+    err 1 "Missing ${ethname_ifmap} file. Cannot perform renaming.";
+  fi
+
+  # Rename interfaces; first into tempdev$n with n = 0, 1, ... to avoid any
+  # possible collision with the desired names. (ex. ue0 -> ue1; ue1 -> ue0
+  # renaming.)
+  let n=0 > /dev/null
+  for x in ${ethname_devices}; do
+    if fix_name $x tempdev$n; then
+      let n=n+1 > /dev/null
+    elif [ $? -eq 1 ]; then
+      warn "Skipping rename of [$x]: ${err_str}"
+    else
+      warn "Error during rename of [$x]: ${err_str}"
+    fi
+  done
+
+  # Loop back over renamed devices and lookup their desired names.
+  let m=0 > /dev/null
+  while [ $m -lt $n ]; do
+    fix_name tempdev$m || \
+      warn "Error during renaming process. Stranded [tempdev$m]."
+    let m=m+1 > /dev/null
+  done
+}
+
+run_rc_command "$1"
