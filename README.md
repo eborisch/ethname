@@ -1,5 +1,5 @@
 # ethname
-Self-contained FreeBSD rc.d script for re-naming devices based on their MAC address.
+Self-contained FreeBSD rc.d script for re-naming devices based on their MAC address. I needed it due to USB Ethernet devices coming up in different orders across OS upgrades.
 
 ## Installation:
 Copy ethname into /usr/local/etc/rc.d/
