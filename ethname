@@ -9,10 +9,18 @@
 #       <MAC address (in lower case)> <Desired name>
 #     For example:
 #       01:23:45:67:89:ab eth0
-#  3) That's it. Use ifconfig_<name>="" settings with the new names.
+#  3) Make sure any interfaces you want to rename have their drivers loaded or
+#     compiled in. If ue0 is on axe0, for example, add 'if_load_axe="YES"' to
+#     /boot/loader.conf. See the man page for your device (eg 'man axe') for
+#     particulars.
+#  4) That's it. Use ifconfig_<name>="" settings with the new names.
 # 
 # Devices in ethname_devices which are unknown to ifconfig or with MAC
 # addresses not found in /usr/local/etc/ifmap are silently ignored.
+# 
+# Optional rc.conf settings:
+#   ethname_ifmap : Location of ifmap file
+#   ethname_timeout : Maximum wait time for devices to appear.
 #
 # PROVIDE: ethname
 # REQUIRE: FILESYSTEMS
