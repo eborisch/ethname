@@ -31,8 +31,12 @@ load_rc_config $name
 : ${ethname_enable:=no}
 : ${ethname_devices:=""}
 : ${ethname_ifmap:="/usr/local/etc/ifmap"}
+: ${ethname_timeout:="30"}
 
 err_str=""
+
+# Total wait timeout; won't wait n*timeout for n devices, just timeout
+waited=0
 
 fix_name()
 {
@@ -41,8 +45,22 @@ fix_name()
   dev=$1
   name=${2:-}
 
+  # Enable ctrl-c for wait loop
+  trap break SIGINT
+
+  # Wait for the device to show up (up to ethname_timeout)
+  while [ ${waited} -lt ${ethname_timeout} ]; do
+    # Break out of the loop when ifconfig includes our device
+    ifconfig -l | egrep -q '\<'$dev'\>' && break
+    warn "Waiting [$((ethname_timeout - waited))s] for ${dev} to appear..."
+    sleep 1
+    waited=$((waited+1))
+  done  
+
+  # Restore handler
+  trap - SIGINT
+ 
   # Make sure the device exists as an ifconfig device
-  
   if ! ifconfig -l | grep -q $dev; then
     err_str="could not find device."
     return 1
@@ -95,10 +113,10 @@ ethname_start()
   # Rename interfaces; first into tempdev$n with n = 0, 1, ... to avoid any
   # possible collision with the desired names. (ex. ue0 -> ue1; ue1 -> ue0
   # renaming.)
-  let n=0 > /dev/null
+  n=0
   for x in ${ethname_devices}; do
     if fix_name $x tempdev$n; then
-      let n=n+1 > /dev/null
+      $((n=n+1))
     elif [ $? -eq 1 ]; then
       warn "Skipping rename of [$x]: ${err_str}"
     else
@@ -107,11 +125,11 @@ ethname_start()
   done
 
   # Loop back over renamed devices and lookup their desired names.
-  let m=0 > /dev/null
+  m=0
   while [ $m -lt $n ]; do
     fix_name tempdev$m || \
       warn "Error during renaming process. Stranded [tempdev$m]."
-    let m=m+1 > /dev/null
+    $((m=m+1))
   done
 }
 
