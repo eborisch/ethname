@@ -5,21 +5,19 @@
 #  1) add the following to rc.conf:
 #       ethname_enable="YES"
 #       ethname_devices="em0 ue0 ue1" # Replace with desired devices to rename
-#  2) Create /usr/local/etc/ifmap in the following format:
-#       <MAC address (in lower case)> <Desired name>
+#       ethname_map="<MAC> <NAME> [<MAC> <NAME>] ..."
 #     For example:
-#       01:23:45:67:89:ab eth0
-#  3) Make sure any interfaces you want to rename have their drivers loaded or
+#       ethname_map="01:23:45:67:89:ab eth0 01:23:45:67:89:ac eth1"
+#  2) Make sure any interfaces you want to rename have their drivers loaded or
 #     compiled in. If ue0 is on axe0, for example, add 'if_load_axe="YES"' to
 #     /boot/loader.conf. See the man page for your device (eg 'man axe') for
 #     particulars.
-#  4) That's it. Use ifconfig_<name>="" settings with the new names.
+#  3) That's it. Use ifconfig_<name>="" settings with the new names.
 # 
 # Devices in ethname_devices which are unknown to ifconfig or with MAC
-# addresses not found in /usr/local/etc/ifmap are silently ignored.
+# addresses not found in ethname_map  are silently ignored.
 # 
 # Optional rc.conf settings:
-#   ethname_ifmap : Location of ifmap file
 #   ethname_timeout : Maximum wait time for devices to appear.
 #
 # PROVIDE: ethname
@@ -36,9 +34,9 @@ start_cmd="${name}_start"
 stop_cmd=":"
 
 load_rc_config $name
-: ${ethname_enable:=no}
 : ${ethname_devices:=""}
-: ${ethname_ifmap:="/usr/local/etc/ifmap"}
+: ${ethname_enable:=no}
+: ${ethname_map:=""}
 : ${ethname_timeout:="30"}
 
 err_str=""
@@ -46,10 +44,45 @@ err_str=""
 # Total wait timeout; won't wait n*timeout for n devices, just timeout
 waited=0
 
+tolower()
+{
+  echo "$*" | tr "[:upper:]" "[:lower:]"
+}
+
+known_mac()
+{
+  echo "${ethname_map}" | grep -qi "$1"
+}
+
+remap_err()
+{
+  err 1 "ethname_map must contain <mac> <name> (<mac> <name>)*"
+}
+
+kv_lookup()
+{
+  # Called with $1=K, the key we want to find the value for, and $2:$3
+  # $4:$5 ... forming pairs of key:value mappings
+  K=$(tolower $1)
+  [ ${#K} -eq 0 ] && err 1 "Called kv_lookup() with missing arg."
+  shift
+  while [ $# -ge 2 ]; do
+    key=$1
+    value=$2
+    # Only supports non-zero-length keys/values
+    [ ${#key} -eq 0 -o ${#value} -eq 0 ] && remap_err
+    # Not case sensitive by design
+    key=$(tolower $key)
+    [ ${key} == ${K} ] && echo $value && return 0
+    shift 2
+  done
+  return 1
+}
+
 fix_name()
 {
   # Can be called with or without a second argument (which is used as the new
-  # name if provided.) If only one argument, lookup desired name in ifmap.
+  # name if provided.) If only one argument, lookup desired name in map.
   dev=$1
   name=${2:-}
 
@@ -83,23 +116,23 @@ fix_name()
   fi
 
   # Make sure the MAC for this device is in our rename table.
-  if ! grep -q "^$mac" ${ethname_ifmap}; then
-    err_str="no maching MAC in ifmap."
+  if ! known_mac "$mac"; then
+    err_str="no maching MAC in 'ethname_map'."
     return 1
   fi
 
-  # Find name from MAC -> dev_name table in ifmap
-  dname=$(awk "/^$mac/{print \$2}" ${ethname_ifmap})
+  # Find name from MAC -> dev_name table in map
+  dname=$(kv_lookup $mac ${ethname_map})
   if [ "$dname" == "$dev" ]; then
     err_str="already has desired name."
     return 1
   fi
 
-  # Use name from MAC -> dev_name table in ifmap if $2 was empty
+  # Use name from MAC -> dev_name table in map if $2 was empty
   : ${name:=$dname}
 
   # We have everything we need. Now actual rename of the device.
-  if ! ifconfig $dev name $name; then
+  if ! ifconfig $dev name $name > /dev/null ; then
     err_str="return code: $?"
     return 2
   fi
@@ -113,9 +146,9 @@ ethname_start()
     exit 0
   fi
 
-  # If we have devices to rename, we need an ifmap file
-  if [ ! -e ${ethname_ifmap} ]; then
-    err 1 "Missing ${ethname_ifmap} file. Cannot perform renaming.";
+  # If we have devices to rename, we need a map
+  if [ ${#ethname_map} -eq 0 ]; then
+    remap_err 
   fi
 
   # Rename interfaces; first into tempdev$n with n = 0, 1, ... to avoid any
@@ -124,7 +157,7 @@ ethname_start()
   n=0
   for x in ${ethname_devices}; do
     if fix_name $x tempdev$n; then
-      $((n=n+1))
+      n=$((n+1))
     elif [ $? -eq 1 ]; then
       warn "Skipping rename of [$x]: ${err_str}"
     else
@@ -137,7 +170,7 @@ ethname_start()
   while [ $m -lt $n ]; do
     fix_name tempdev$m || \
       warn "Error during renaming process. Stranded [tempdev$m]."
-    $((m=m+1))
+    m=$((m+1))
   done
 }
 
