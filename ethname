@@ -1,5 +1,8 @@
 #!/bin/sh
 #
+#  * Copyright (c) 2016-2017 Eric Borisch <eborisch@gmail.com>
+#  * All rights reserved.
+#
 # Self-contained rc.d script for re-naming devices based on their MAC address.
 # USAGE:
 #  1) add the following to rc.conf:
