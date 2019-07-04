@@ -24,20 +24,18 @@ You can optionally restrict handling to a set of defined names with:
 ```
 ethname_names="external private"
 ```
-otherwise all defined ethname_*_mac="" values are used
+otherwise all defined `ethname_*_mac=""` values are used
 
 Make sure any interfaces you want to rename have their drivers loaded or
-compiled in. If externnal is on axe0, for example, add 'if_load_axe="YES"' to
+compiled in. If externnal is on axe0, for example, add `if_load_axe="YES"` to
 /boot/loader.conf. See the man page for your device (eg 'man axe') for
 particulars.
 
-That's it. Use ifconfig_<NAME>="" settings with the new names.
+All other devices are untouched.
 
- All other devices are untouched.
-
- Optional rc.conf settings:
+Optional rc.conf settings:
 ```
-   ethname_timeout : Maximum wait time for devices to appear. [default=30]
+ethname_timeout : Maximum wait time for devices to appear. [default=30]
 ```
 
 That's it. Use `ifconfig_<name>=""` settings in rc.conf with the new names.
