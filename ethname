@@ -1,180 +1,280 @@
 #!/bin/sh
 #
-#  * Copyright (c) 2016-2017 Eric Borisch <eborisch@gmail.com>
+#  * Copyright (c) 2016-2019 Eric Borisch <eborisch@gmail.com>
 #  * All rights reserved.
 #
 # Self-contained rc.d script for re-naming devices based on their MAC address.
+# Renaming is performed before interface bring-up -- netif -- so all
+# configurations of the devices can be done with the new names.
+#
 # USAGE:
-#  1) add the following to rc.conf:
-#       ethname_enable="YES"
-#       ethname_devices="em0 ue0 ue1" # Replace with desired devices to rename
-#       ethname_map="<MAC> <NAME> [<MAC> <NAME>] ..."
-#     For example:
-#       ethname_map="01:23:45:67:89:ab eth0 01:23:45:67:89:ac eth1"
-#  2) Make sure any interfaces you want to rename have their drivers loaded or
-#     compiled in. If ue0 is on axe0, for example, add 'if_load_axe="YES"' to
-#     /boot/loader.conf. See the man page for your device (eg 'man axe') for
-#     particulars.
-#  3) That's it. Use ifconfig_<name>="" settings with the new names.
-# 
-# Devices in ethname_devices which are unknown to ifconfig or with MAC
-# addresses not found in ethname_map  are silently ignored.
-# 
+#  1)  Add the following to rc.conf:
+#         ethname_enable="YES"
+#         ethname_external_mac="aa:bb:cc:dd:ee:00"
+#         ethname_private_mac="aa:bb:cc:dd:ee:01"
+#  1a) You can optionally restrict handling to a set of defined names with:
+#         ethname_names="external private"
+#      otherwise all defined ethname_*_mac="" values are used
+#  2)  Make sure any interfaces you want to rename have their drivers loaded or
+#      compiled in. If ue0 is on axe0, for example, add 'if_load_axe="YES"' to
+#      /boot/loader.conf. See the man page for your device (eg 'man axe') for
+#      particulars.
+#  3)  That's it. Use ifconfig_<name>="" settings with the new names.
+#
+# All other devices are untouched.
+#
 # Optional rc.conf settings:
-#   ethname_timeout : Maximum wait time for devices to appear.
+#   ethname_timeout : Maximum wait time for devices to appear. [default=30]
 #
 # PROVIDE: ethname
 # REQUIRE: FILESYSTEMS
 # BEFORE: netif
 # KEYWORD: nojail
 
+# ethname version 2.0
+
 . /etc/rc.subr
 
 name=ethname
 rcvar=ethname_enable
+extra_commands="check"
+check_cmd="en_check"
 
 start_cmd="${name}_start"
 stop_cmd=":"
 
-load_rc_config $name
-: ${ethname_devices:=""}
+load_rc_config ${name}
+: ${ethname_names:=""}
 : ${ethname_enable:=no}
-: ${ethname_map:=""}
 : ${ethname_timeout:="30"}
 
-err_str=""
+en_str=""
+
+# Will fill with mac interface [mac interface] ...]
+en_map=""
+
+# Will fill with original device names that match a managed mac address.
+en_orig=""
 
 # Total wait timeout; won't wait n*timeout for n devices, just timeout
-waited=0
-
-tolower()
-{
-  echo "$*" | tr "[:upper:]" "[:lower:]"
-}
+en_waited=0
 
 known_mac()
 {
-  echo "${ethname_map}" | grep -qi "$1"
+    echo "${en_map}" | grep -qi "$1"
 }
 
-remap_err()
+to_lower()
 {
-  err 1 "ethname_map must contain <mac> <name> (<mac> <name>)*"
+    echo "$*" | tr "[:upper:]" "[:lower:]"
 }
+
 
 kv_lookup()
 {
-  # Called with $1=K, the key we want to find the value for, and $2:$3
-  # $4:$5 ... forming pairs of key:value mappings
-  K=$(tolower $1)
-  [ ${#K} -eq 0 ] && err 1 "Called kv_lookup() with missing arg."
-  shift
-  while [ $# -ge 2 ]; do
-    key=$1
-    value=$2
-    # Only supports non-zero-length keys/values
-    [ ${#key} -eq 0 -o ${#value} -eq 0 ] && remap_err
-    # Not case sensitive by design
-    key=$(tolower $key)
-    [ ${key} == ${K} ] && echo $value && return 0
-    shift 2
-  done
-  return 1
+    # Called with $1=K, the key we want to find the value for, and $2:$3
+    # $4:$5 ... forming pairs of key:value mappings
+    local _K _key _value
+
+    _K=$(to_lower "$1")
+    [ -z "${_K}" ] && err 1 "Called kv_lookup() with missing args."
+    shift
+    while [ $# -ge 2 ]; do
+        _key=$(to_lower "$1")
+        _value=$2
+        shift 2
+        # Only supports non-zero-length keys/values
+        [ -z "${_key}" -o -z "${_value}" ] && err 1 "Zero length values passed?"
+        [ "${_key}" == "${_K}" ] && echo "${_value}" && return 0
+    done
+    return 1
+}
+
+good_mac() {
+    echo "$1" | egrep -qi '^([0-9a-z]{2}:){5}[0-9a-z]{2}$' || \
+      err 1 "Invalid MAC address defined: [$1]"
+    return 0
+}
+
+good_devname() {
+    echo "$1" | egrep -qi '^[a-z][a-z0-9_]+$' || \
+      err 1 "Invalid device name defined: [$1]"
+    return 0
+}
+
+breakout_map () {
+    # This takes a single ethname_map variable (old interface) and breaks it
+    # into the new interface (ethname_names and ethname_NAME_mac vars.)
+    local _mac _name
+    while [ $# -gt 0 ]; do
+        _mac=$1
+        _name=$2
+        good_mac "${_mac}"
+        good_devname "${_name}"
+        shift 2
+        # Params checked for validity above
+        eval ethname_${_name}_mac="${_mac}"
+        ethname_names="${ethname_names} ${_name}"
+    done
+}
+
+en_prep()
+{
+    local _mac _name _dev _found
+    local _compat=0
+
+    if [ -z "${ethname_names}" ]; then
+        # Compatibility code
+        if [ ! -z "${ethname_map}" -a ! -z "${ethname_devices}" ]; then
+            ethname_names=""
+            warn "ethname: Using old interface. Please see documentation."
+            breakout_map ${ethname_map}
+            _compat=1
+        else
+            # Detect set ethname_*_mac names
+            ethname_names=$(set | sed -En '/^ethname_([^=]+)_mac=.*/s//\1/p')
+        fi
+    fi
+
+    # Transforms set of ethname_NAME_mac="" values into en_map="MAC NAME ..."
+    # and en_orig="EXISTINGDEV ..."; a map of desired MAC:name mappings
+    # and the devices with those MACs, respectively.
+
+    for _name in ${ethname_names}; do
+        # Make sure ${_name} is good before eval call
+        good_devname "${_name}"
+        eval _mac=\$ethname_${_name}_mac
+
+        [ -z "${_mac}" -a ${_compat} -eq 0 ] && \
+            warn "ethname_${_name}_mac is not set in rc.conf!" && continue
+
+        good_mac "${_mac}"
+
+        # Enable ctrl-c for wait loop
+        trap break SIGINT
+
+        _found=0
+        while [ ${en_waited} -lt ${ethname_timeout} ]; do
+            for _dev in $(ifconfig -l ether); do
+                if ifconfig ${_dev} | grep -qi "${_mac}"; then
+                    en_map="${en_map} ${_mac} ${_name}"
+                    en_orig="${en_orig} ${_dev}"
+                    _found=1
+                    break
+                fi
+            done
+            [ ${_found} -eq 1 ] && break
+            sleep 1
+            warn "Waiting for a device with MAC [${_mac}] to appear..."
+            en_waited=$((en_waited + 1))
+        done
+
+        trap - SIGINT
+
+        [ ${_found} -eq 0 ] && \
+            warn "Unable to locate device to rename [${_name}]!"
+    done
+}
+
+en_check() {
+    local _mac _name _orig
+    local _n=1
+    en_prep
+    # Piping into a while loop, but we don't need any results from this loop to
+    # be visible in this shell, so it's not an issue.
+    echo "${en_map}" | xargs -n 2 echo | while read _mac _name; do
+        _orig=$(echo "${en_orig}" | awk "{print \$${_n}}")
+        if [ "${_orig}" = "${_name}" ]; then
+            printf "Device with MAC [%s] already named '%s'\n" \
+              "${_mac}" "${_name}"
+        else
+            printf "Will rename [%s] to [%s] with MAC [%s]\n" \
+              "${_orig}" "${_name}" "${_mac}"
+        fi
+        _n=$((_n + 1))
+    done
 }
 
 fix_name()
 {
-  # Can be called with or without a second argument (which is used as the new
-  # name if provided.) If only one argument, lookup desired name in map.
-  dev=$1
-  name=${2:-}
+    # Can be called with or without a second argument (which is used as the new
+    # name if provided.) If only one argument, lookup desired name in map.
+    dev=$1
+    name=$2
 
-  # Enable ctrl-c for wait loop
-  trap break SIGINT
+    # Make sure the device exists as an ifconfig device
+    if ! ifconfig -l ether | grep -q "${dev}"; then
+        en_str="could not find device."
+        return 1
+    fi
 
-  # Wait for the device to show up (up to ethname_timeout)
-  while [ ${waited} -lt ${ethname_timeout} ]; do
-    # Break out of the loop when ifconfig includes our device
-    ifconfig -l | egrep -q '\<'$dev'\>' && break
-    warn "Waiting [$((ethname_timeout - waited))s] for ${dev} to appear..."
-    sleep 1
-    waited=$((waited+1))
-  done  
+    # Grab MAC address
+    mac=$(ifconfig ${dev} | awk '/ether/{print tolower($2)}')
 
-  # Restore handler
-  trap - SIGINT
- 
-  # Make sure the device exists as an ifconfig device
-  if ! ifconfig -l | grep -q $dev; then
-    err_str="could not find device."
-    return 1
-  fi
+    if [ ${#mac} -eq 0 ]; then
+        en_str="unable to get MAC address"
+        return 1
+    fi
 
-  # Grab MAC address
-  mac=$(ifconfig $dev | awk '/ether/{print tolower($2)}')
+    # Make sure the MAC for this device is in our rename table.
+    if ! known_mac "${mac}"; then
+        en_str="no maching MAC in ethname_<NAME>_mac params."
+        return 1
+    fi
 
-  if [ ${#mac} -eq 0 ]; then
-    err_str="unable to get MAC address"
-    return 1
-  fi
+    # Find name from MAC -> dev_name table in map
+    dname=$(kv_lookup ${mac} ${en_map})
+    if [ "${dname}" == "${dev}" ]; then
+        en_str="already has desired name."
+        return 1
+    fi
 
-  # Make sure the MAC for this device is in our rename table.
-  if ! known_mac "$mac"; then
-    err_str="no maching MAC in 'ethname_map'."
-    return 1
-  fi
+    # Use name from MAC -> dev_name table in map if $2 was empty
+    : ${name:=${dname}}
 
-  # Find name from MAC -> dev_name table in map
-  dname=$(kv_lookup $mac ${ethname_map})
-  if [ "$dname" == "$dev" ]; then
-    err_str="already has desired name."
-    return 1
-  fi
-
-  # Use name from MAC -> dev_name table in map if $2 was empty
-  : ${name:=$dname}
-
-  # We have everything we need. Now actual rename of the device.
-  if ! ifconfig $dev name $name > /dev/null ; then
-    err_str="return code: $?"
-    return 2
-  fi
+    # We have everything we need. Now actual rename of the device.
+    if ! ifconfig ${dev} name ${name} > /dev/null ; then
+        en_str="return code: $?"
+        return 2
+    fi
 }
 
 ethname_start()
 {
-  # Don't report any other errors if we haven't been asked to do anything.
-  if [ ${#ethname_devices} -eq 0 ]; then
-    warn "No/empty ethname_devices=\"...\" setting in rc.conf. Done."
-    exit 0
-  fi
+    local _n _m _prefix _x
+    # Build the map of "mac name [mac name] [...]"
+    en_prep
 
-  # If we have devices to rename, we need a map
-  if [ ${#ethname_map} -eq 0 ]; then
-    remap_err 
-  fi
-
-  # Rename interfaces; first into tempdev$n with n = 0, 1, ... to avoid any
-  # possible collision with the desired names. (ex. ue0 -> ue1; ue1 -> ue0
-  # renaming.)
-  n=0
-  for x in ${ethname_devices}; do
-    if fix_name $x tempdev$n; then
-      n=$((n+1))
-    elif [ $? -eq 1 ]; then
-      warn "Skipping rename of [$x]: ${err_str}"
-    else
-      warn "Error during rename of [$x]: ${err_str}"
+    # Don't report any other errors if we haven't been asked to do anything.
+    if [ ${#en_orig} -eq 0 ]; then
+        warn "Unable to locate any of the specified ethname_\*_mac addresses."
+        exit 0
     fi
-  done
 
-  # Loop back over renamed devices and lookup their desired names.
-  m=0
-  while [ $m -lt $n ]; do
-    fix_name tempdev$m || \
-      warn "Error during renaming process. Stranded [tempdev$m]."
-    m=$((m+1))
-  done
+    # Rename interfaces; first into en_tmp_$_n with _n = 0, 1, ... to avoid any
+    # possible collision with the desired names. (ex. ue0 -> ue1; ue1 -> ue0
+    # renaming.)
+    _prefix=en_$$_
+    _n=0
+    for _x in ${en_orig}; do
+        if fix_name ${_x} ${_prefix}${_n}; then
+            _n=$((_n+1))
+        elif [ $? -eq 1 ]; then
+            info "Skipping rename of [${_x}]: ${en_str}"
+        else
+            warn "Error during rename of [${_x}]: ${en_str}"
+        fi
+    done
+
+    # Loop back over renamed devices and lookup their desired names.
+    _m=0
+    while [ ${_m} -lt ${_n} ]; do
+        fix_name ${_prefix}${_m} || \
+          warn "Error during renaming process. Stranded [${_prefix}${_m}]."
+        _m=$((_m+1))
+    done
 }
 
 run_rc_command "$1"
+
+# vim: et:ts=4:sw=4
