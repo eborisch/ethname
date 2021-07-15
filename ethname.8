@@ -1,0 +1,115 @@
+.
+.Dd July 12, 2021
+.Dt ethname 8
+.Os
+.Sh NAME
+.Nm ethtool
+.Nd bind interface names to MAC addresses at boot
+.Sh SYNOPSIS
+.
+To rename (at boot) the device with MAC address
+.Em aa:bb:cc:dd:ee:ff
+to have the name
+.Em foo ,
+Add the following to
+.Xr rc.conf 5 :
+.Bd -literal -offset indent
+ethname_enable="YES"
+ethname_foo_mac="aa:bb:cc:dd:ee:ff"
+.Ed
+.Pp
+Optionally restrict the set of configured names (defaults to all defined
+ethname_*_mac variables) to apply, or the maximum time (in seconds; default 30)
+to wait for devices to appear:
+.Bd -literal -offset indent
+ethname_names="<name> [<name> ...]"
+ethname_timeout="15"
+.Ed
+.Pp
+.Em The rename process occurs before interface bring-up ,
+so all
+.Xr ifconfig 8
+directives in
+.Xr rc.conf 5
+can be written using the assigned names.
+.Sh DESCRIPTION
+The
+.Nm
+.Xr rc 8
+script enables renaming Ethernet devices by their MAC address at boot time.
+All configuration is controlled via the normal set of
+.Xr rc.conf 5
+files.
+.Pp
+Ensure any interfaces to be renamed have their drivers loaded or compiled in.
+If the device is axe*, for example, add 
+.Em if_load_axe="YES"
+to
+.Em /boot/loader.conf .
+See the man page for your device (e.g
+.Xr axe 4 )
+for particulars.
+.Pp
+All other devices will be untouched. Name swapping, for example trading
+.Em igb0
+<->
+.Em igb1 ,
+is supported, as temporary names are used during processing.
+.Pp
+"Start"-ing the script again post-boot is supported; already renamed devices
+will be left alone, and any newly present or configured devices will be
+renamed.  [Note
+.Xr ifconfig 8
+will also need to be started (service ifconfig start newname) for the newly
+renamed device to pick up any
+.Xr rc.conf 5
+configuration.] "Stop"-ing is not supported, as the original devices names are
+not recorded.
+.Sh EXAMPLES
+Rename the
+.Em <MAC PREFIX>:00
+and
+.Em <MAC PREFIX>:01
+devices from an adapter to be
+.Em external
+and
+.Em private
+respectively, while
+.Em not
+renaming the
+.Em <MAC PREFIX>:02
+device, even though the name
+.Em foo
+is configured, and wait no longer than 10s for the devices to appear:
+.Bd -literal -offset indent
+ethname_enable="YES"
+
+ethname_external_mac="aa:bb:cc:dd:ee:00"
+ethname_private_mac="aa:bb:cc:dd:ee:01"
+
+# Configured, but excluded from ethnames_names
+ethname_foo_mac="aa:bb:cc:dd:ee:02"
+
+ethname_names="external private"
+
+ethname_timeout="10"
+.Ed
+.Sh FILES
+.Bl -tag -width "/usr/local/etc/rc.d/ethname" -compact
+.It Pa /etc/rc.conf
+Main
+.Xr rc 8
+configuration file.
+.It Pa /usr/local/etc/rc.d/ethname
+Actual script
+.El
+.Sh SEE ALSO
+.Xr ifconfig 8 ,
+.Xr rc 8 ,
+.Xr rc.conf 5
+.Sh HISTORY
+Initially implemented in 2016 while using a small system with multiple USB
+Ethernet adapters as a home internet router to avoid occasionally swapping
+interfaces due to boot-time vagaries.
+.Sh AUTHORS
+Eric A. Borisch
